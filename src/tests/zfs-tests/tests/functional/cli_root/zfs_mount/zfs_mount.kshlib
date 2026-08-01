@@ -1,0 +1,261 @@
+# SPDX-License-Identifier: CDDL-1.0
+#
+# CDDL HEADER START
+#
+# The contents of this file are subject to the terms of the
+# Common Development and Distribution License (the "License").
+# You may not use this file except in compliance with the License.
+#
+# You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
+# or https://opensource.org/licenses/CDDL-1.0.
+# See the License for the specific language governing permissions
+# and limitations under the License.
+#
+# When distributing Covered Code, include this CDDL HEADER in each
+# file and include the License file at usr/src/OPENSOLARIS.LICENSE.
+# If applicable, add the following below this CDDL HEADER, with the
+# fields enclosed by brackets "[]" replaced with your own identifying
+# information: Portions Copyright [yyyy] [name of copyright owner]
+#
+# CDDL HEADER END
+#
+
+#
+# Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
+# Use is subject to license terms.
+#
+
+#
+# Copyright (c) 2017 by Delphix. All rights reserved.
+# Copyright 2017, loli10K <ezomori.nozomu@gmail.com>. All rights reserved.
+# Copyright (c) 2026, TrueNAS.
+#
+
+. $STF_SUITE/include/libtest.shlib
+. $STF_SUITE/tests/functional/cli_root/zfs_mount/zfs_mount.cfg
+
+function force_unmount #dev
+{
+	typeset dev=$1
+
+	ismounted $dev && log_must zfs $unmountforce $dev
+	return 0
+}
+
+# Create pool and  ( fs | container | vol ) with the given parameters,
+# it'll destroy prior exist one that has the same name.
+
+function setup_filesystem #disklist #pool #fs #mntpoint #type #vdev
+{
+	typeset disklist=$1
+	typeset pool=$2
+	typeset fs=${3##/}
+	typeset mntpoint=$4
+	typeset type=$5
+	typeset vdev=$6
+
+	if [[ -z $pool || -z $fs || -z $mntpoint ]]; then
+		log_note "Missing parameter: (\"$pool\", \"$fs\", \"$mntpoint\")"
+		return 1
+	fi
+
+	if is_global_zone && [[ -z $disklist ]] ; then
+		log_note "Missing disklist."
+		return 1
+	fi
+
+	if [[ $vdev != "" && \
+		$vdev != "mirror" && \
+		$vdev != "raidz" && \
+		$vdev != "draid" ]] ; then
+
+		log_note "Wrong vdev: (\"$vdev\")"
+		return 1
+	fi
+
+	poolexists $pool || \
+		create_pool $pool $vdev $disklist
+
+	datasetexists $pool/$fs && \
+		log_must cleanup_filesystem $pool $fs
+
+	rmdir $mntpoint > /dev/null 2>&1
+	if [[ ! -d $mntpoint ]]; then
+		log_must mkdir -p $mntpoint
+	fi
+
+	case "$type" in
+		'ctr')	log_must zfs create -o mountpoint=$mntpoint $pool/$fs
+			;;
+		'vol')	log_must zfs create -V $VOLSIZE $pool/$fs
+			block_device_wait
+			;;
+		*)	log_must zfs create -o mountpoint=$mntpoint $pool/$fs
+			;;
+	esac
+
+	return 0
+}
+
+# Destroy ( fs | container | vol ) with the given parameters.
+function cleanup_filesystem #pool #fs
+{
+	typeset pool=$1
+	typeset fs=${2##/}
+	typeset mtpt=""
+
+	if [[ -z $pool || -z $fs ]]; then
+		log_note "Missing parameter: (\"$pool\", \"$fs\")"
+		return 1
+	fi
+
+	if datasetexists "$pool/$fs" ; then
+		mtpt=$(get_prop mountpoint "$pool/$fs")
+		destroy_dataset "$pool/$fs" "-r"
+
+		[[ -d $mtpt ]] && \
+			log_must rm -rf $mtpt
+	else
+		return 1
+	fi
+
+	return 0
+}
+
+# Make sure 'zfs mount' should display all ZFS filesystems currently mounted.
+# The results of 'zfs mount' and 'df -F zfs' should be identical.
+function verify_mount_display
+{
+	typeset fs
+
+	for fs in $(zfs $mountcmd | awk '{print $1}') ; do
+		log_must mounted $fs
+	done
+	return 0
+}
+
+# Helper functions to call the system mount(8) with various options
+function mount_default # <dataset mountpoint | mountpoint>
+{
+	typeset opts=
+	if is_freebsd; then
+		opts="-t zfs"
+	else
+		opts="-t zfs"
+	fi
+
+	mount $opts "$@"
+	return $?
+}
+
+function mount_ro # <dataset mountpoint | mountpoint>
+{
+	typeset opts=
+	if is_freebsd; then
+		opts="-t zfs -r"
+	else
+		opts="-t zfs -o ro"
+	fi
+
+	mount $opts "$@"
+	return $?
+}
+
+function mount_rw # <dataset mountpoint | mountpoint>
+{
+	typeset opts=
+	if is_freebsd; then
+		opts="-t zfs -w"
+	else
+		opts="-t zfs -o rw"
+	fi
+
+	mount $opts "$@"
+	return $?
+}
+
+function remount_ro # <dataset mountpoint | mountpoint>
+{
+	typeset opts=
+	if is_freebsd; then
+		opts="-t zfs -ur"
+	else
+		opts="-o remount,ro"
+	fi
+
+	mount $opts "$@"
+	return $?
+}
+
+function remount_rw # <dataset mountpoint | mountpoint>
+{
+	typeset opts=
+	if is_freebsd; then
+		opts="-t zfs -uw"
+	else
+		opts="-o remount,rw"
+	fi
+
+	mount $opts "$@"
+	return $?
+}
+
+#
+# Verify that $mountpoint is mounted readonly
+# This is preferred over "log_mustnot touch $fs" because we actually want to
+# verify the error returned is EROFS
+#
+function mount_is_ro # mountpoint
+{
+	typeset mountpoint="$1"
+
+	file_write -o create -f $mountpoint/file.dat
+	ret=$?
+	if [[ $ret != 30 ]]; then
+		log_fail "Writing to $mountpoint did not return EROFS ($ret)."
+	fi
+}
+
+function mount_is_rw # mountpoint
+{
+	typeset mountpoint="$1"
+	log_must touch $mountpoint/file.dat
+}
+
+# Get the read-only/read-write option for $mountpoint
+# Prints either "ro" or "rw", or nothing if $mountpoint is not in the mount
+# table, or is not a ZFS mount.
+function mount_get_ro_rw # mountpoint
+{
+	typeset mountpoint="$1"
+
+	if is_freebsd; then
+		# tank/hello  /tank/hello  zfs  rw,nfsv4acls  0 0
+		mount -p | \
+		awk -v mountpoint="$mountpoint" '
+		    $2 != mountpoint || $3 != "zfs" { next }
+		    $4 ~ /(^|,)ro(,|$)/ { print "ro" }
+		    $4 ~ /(^|,)rw(,|$)/ { print "rw" }'
+	else
+		# tank/hello  /tank/hello  zfs  rw,relatime,xattr,noacl,casesensitive  0 0
+		awk -v mountpoint="$mountpoint" '
+		    $2 != mountpoint || $3 != "zfs" { next }
+		    $4 ~ /(^|,)ro(,|$)/ { print "ro" }
+		    $4 ~ /(^|,)rw(,|$)/ { print "rw" }' /proc/mounts
+	fi
+}
+
+# Verify that $mountpoint is mounted with a "read-only" option
+function mount_has_ro_option # mountpoint
+{
+	typeset ropt=$(mount_get_ro_rw "$1")
+	log_must test $ropt == "ro"
+}
+
+# Verify that $mountpoint is mounted with a "read-write" option
+function mount_has_rw_option # mountpoint
+{
+	typeset ropt=$(mount_get_ro_rw "$1")
+	log_must test $ropt == "rw"
+}
+

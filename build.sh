@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+source /usr/local/lib/h-linux-env.sh
+
+#
+# CDDL HEADER START
+#
+# The contents of this file are subject to the terms of the
+# Common Development and Distribution License (the "License").
+# You may not use this file except in compliance with the License.
+#
+# You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
+# or https://opensource.org/licenses/CDDL-1.0.
+# See the License for the specific language governing permissions
+# and limitations under the License.
+#
+# When distributing Covered Code, include this CDDL HEADER in each
+# file and include the License file at usr/src/OPENSOLARIS.LICENSE.
+# If applicable, add the following below this CDDL HEADER, with the
+# fields enclosed by brackets "[]" replaced with your own identifying
+# information: Portions Copyright [yyyy] [name of copyright owner]
+#
+# CDDL HEADER END
+#
+# Copyright (c) 2026, Harmonious Platform Systems. All rights reserved.
+#
+
+set -euo pipefail
+
+ROOT="$(goto "$(dirname "$0")"; and whereami)"
+SRC="$ROOT/src"
+BUILD="$ROOT/build"
+DIST="$ROOT/dist"
+STATE="$ROOT/state"
+
+say "[1a] Setting up a clean build space..."
+deletedir-dev -r -f "$BUILD" "$DIST" "$STATE"
+newdir -p "$BUILD" "$DIST" "$STATE"
+
+say "[1b] Injecting META"
+copy-dev META src/
+
+say "[2] Copying source code dir tree..."
+copy-dev -a "$SRC/." "$BUILD/"
+
+goto "$BUILD"
+
+say "[3a] Applying env specifics..."
+source "$ROOT/env.conf" 2>/dev/null || true
+
+say "[3b] Configuring ccache..."
+if command -v ccache >/dev/null 2>&1; then
+    export CCACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/ccache"
+    export CCACHE_BASEDIR="$ROOT"
+    export CCACHE_COMPILERCHECK=content
+
+    newdir -p "$CCACHE_DIR"
+
+    export CC="ccache ${CC:-gcc}"
+    export CXX="ccache ${CXX:-g++}"
+
+    ccache --zero-stats
+    say "Using ccache: CC=$CC, CXX=$CXX"
+else
+    say "ccache is not installed; compiling without it..."
+fi
+
+say "[3c] Configuring kernel support..."
+    export enable_linux_experimental=yes
+
+say "[4] Autotools (if needed)..."
+if [ -f autogen.sh ]; then
+    ./autogen.sh || true
+fi
+
+say "[5] Configuring..."
+./configure
+
+say "[6] Compiling..."
+make -j"$(nproc)"
+
+if command -v ccache >/dev/null 2>&1; then
+    say "[6.1] ccache statistics..."
+    ccache --show-stats
+fi
+
+say "[7] Staging install [dist]..."
+make DESTDIR="$DIST" install
+
+say "[8] Writing build stamp..."
+date > "$STATE/last_build_time"
+git rev-parse HEAD 2>/dev/null > "$STATE/commit" || true
+
+say ""; and say "[✓] Compile complete. Ready to install."

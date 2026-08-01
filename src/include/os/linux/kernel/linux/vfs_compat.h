@@ -1,0 +1,266 @@
+// SPDX-License-Identifier: CDDL-1.0
+/*
+ * CDDL HEADER START
+ *
+ * The contents of this file are subject to the terms of the
+ * Common Development and Distribution License (the "License").
+ * You may not use this file except in compliance with the License.
+ *
+ * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
+ * or https://opensource.org/licenses/CDDL-1.0.
+ * See the License for the specific language governing permissions
+ * and limitations under the License.
+ *
+ * When distributing Covered Code, include this CDDL HEADER in each
+ * file and include the License file at usr/src/OPENSOLARIS.LICENSE.
+ * If applicable, add the following below this CDDL HEADER, with the
+ * fields enclosed by brackets "[]" replaced with your own identifying
+ * information: Portions Copyright [yyyy] [name of copyright owner]
+ *
+ * CDDL HEADER END
+ */
+
+/*
+ * Copyright (C) 2011 Lawrence Livermore National Security, LLC.
+ * Copyright (C) 2015 Jörg Thalheim.
+ * Copyright (c) 2025, Rob Norris <robn@despairlabs.com>
+ */
+
+#ifndef _ZFS_VFS_H
+#define	_ZFS_VFS_H
+
+#include <sys/taskq.h>
+#include <sys/cred.h>
+#include <linux/backing-dev.h>
+#include <linux/compat.h>
+
+/*
+ * 4.14 adds SB_* flag definitions, define them to MS_* equivalents
+ * if not set.
+ */
+#ifndef	SB_RDONLY
+#define	SB_RDONLY	MS_RDONLY
+#endif
+
+#ifndef	SB_SILENT
+#define	SB_SILENT	MS_SILENT
+#endif
+
+#ifndef	SB_ACTIVE
+#define	SB_ACTIVE	MS_ACTIVE
+#endif
+
+#ifndef	SB_POSIXACL
+#define	SB_POSIXACL	MS_POSIXACL
+#endif
+
+#ifndef	SB_MANDLOCK
+#define	SB_MANDLOCK	MS_MANDLOCK
+#endif
+
+#ifndef	SB_NOATIME
+#define	SB_NOATIME	MS_NOATIME
+#endif
+
+#if defined(SEEK_HOLE) && defined(SEEK_DATA)
+static inline loff_t
+lseek_execute(
+	struct file *filp,
+	struct inode *inode,
+	loff_t offset,
+	loff_t maxsize)
+{
+#ifdef FMODE_UNSIGNED_OFFSET
+	if (offset < 0 && !(filp->f_mode & FMODE_UNSIGNED_OFFSET))
+#else
+	if (offset < 0 && !(filp->f_op->fop_flags & FOP_UNSIGNED_OFFSET))
+#endif
+		return (-EINVAL);
+
+	if (offset > maxsize)
+		return (-EINVAL);
+
+	if (offset != filp->f_pos) {
+		spin_lock(&filp->f_lock);
+		filp->f_pos = offset;
+#ifdef HAVE_FILE_F_VERSION
+		filp->f_version = 0;
+#endif
+		spin_unlock(&filp->f_lock);
+	}
+
+	return (offset);
+}
+#endif /* SEEK_HOLE && SEEK_DATA */
+
+#if defined(CONFIG_FS_POSIX_ACL)
+/*
+ * These functions safely approximates the behavior of posix_acl_release()
+ * which cannot be used because it calls the GPL-only symbol kfree_rcu().
+ * The in-kernel version, which can access the RCU, frees the ACLs after
+ * the grace period expires.  Because we're unsure how long that grace
+ * period may be this implementation conservatively delays for 60 seconds.
+ * This is several orders of magnitude larger than expected grace period.
+ * At 60 seconds the kernel will also begin issuing RCU stall warnings.
+ */
+
+#include <linux/posix_acl.h>
+
+void zpl_posix_acl_release_impl(struct posix_acl *);
+
+static inline void
+zpl_posix_acl_release(struct posix_acl *acl)
+{
+	if ((acl == NULL) || (acl == ACL_NOT_CACHED))
+		return;
+	if (refcount_dec_and_test(&acl->a_refcount))
+		zpl_posix_acl_release_impl(acl);
+}
+#endif /* CONFIG_FS_POSIX_ACL */
+
+static inline uid_t zfs_uid_read_impl(struct inode *ip)
+{
+	return (from_kuid(kcred->user_ns, ip->i_uid));
+}
+
+static inline uid_t zfs_uid_read(struct inode *ip)
+{
+	return (zfs_uid_read_impl(ip));
+}
+
+static inline gid_t zfs_gid_read_impl(struct inode *ip)
+{
+	return (from_kgid(kcred->user_ns, ip->i_gid));
+}
+
+static inline gid_t zfs_gid_read(struct inode *ip)
+{
+	return (zfs_gid_read_impl(ip));
+}
+
+static inline void zfs_uid_write(struct inode *ip, uid_t uid)
+{
+	ip->i_uid = make_kuid(kcred->user_ns, uid);
+}
+
+static inline void zfs_gid_write(struct inode *ip, gid_t gid)
+{
+	ip->i_gid = make_kgid(kcred->user_ns, gid);
+}
+
+/*
+ * 3.15 API change
+ */
+#ifndef RENAME_NOREPLACE
+#define	RENAME_NOREPLACE	(1 << 0) /* Don't overwrite target */
+#endif
+#ifndef RENAME_EXCHANGE
+#define	RENAME_EXCHANGE		(1 << 1) /* Exchange source and dest */
+#endif
+#ifndef RENAME_WHITEOUT
+#define	RENAME_WHITEOUT		(1 << 2) /* Whiteout source */
+#endif
+
+/*
+ * 4.11 API change
+ * These macros are defined by kernel 4.11.  We define them so that the same
+ * code builds under kernels < 4.11 and >= 4.11.  The macros are set to 0 so
+ * that it will create obvious failures if they are accidentally used when built
+ * against a kernel >= 4.11.
+ */
+
+#ifndef STATX_BASIC_STATS
+#define	STATX_BASIC_STATS	0
+#endif
+
+#ifndef AT_STATX_SYNC_AS_STAT
+#define	AT_STATX_SYNC_AS_STAT	0
+#endif
+
+/*
+ * Returns true when called in the context of a 32-bit system call.
+ */
+static inline int
+zpl_is_32bit_api(void)
+{
+#ifdef CONFIG_COMPAT
+	return (in_compat_syscall());
+#else
+	return (BITS_PER_LONG == 32);
+#endif
+}
+
+static inline void
+zpl_generic_fillattr(zidmap_t *idmap, u32 request_mask, struct inode *ip,
+    struct kstat *stat)
+{
+#if defined(HAVE_IDMAP_MNTIDMAP)
+#if defined(HAVE_GENERIC_FILLATTR_IDMAP_REQMASK)
+	generic_fillattr((struct mnt_idmap *)idmap, request_mask, ip, stat);
+#else
+	(void) request_mask;
+	generic_fillattr((struct mnt_idmap *)idmap, ip, stat);
+#endif /* HAVE_GENERIC_FILLATTR_IDMAP_REQMASK */
+#elif defined(HAVE_IDMAP_USERNS)
+	(void) request_mask;
+	generic_fillattr((struct user_namespace *)idmap, ip, stat);
+#else
+	(void) idmap, (void) request_mask;
+	generic_fillattr(ip, stat);
+#endif
+}
+
+static inline int
+zpl_setattr_prepare(zidmap_t *idmap, struct dentry *dentry, struct iattr *ia)
+{
+#if defined(HAVE_IDMAP_MNTIDMAP)
+	return (setattr_prepare((struct mnt_idmap *)idmap, dentry, ia));
+#elif defined(HAVE_IDMAP_USERNS)
+	return (setattr_prepare((struct user_namespace *)idmap, dentry, ia));
+#else
+	(void) idmap;
+	return (setattr_prepare(dentry, ia));
+#endif
+}
+
+static inline bool
+zpl_inode_owner_or_capable(zidmap_t *idmap, struct inode *ip)
+{
+#if defined(HAVE_IDMAP_MNTIDMAP)
+	return (inode_owner_or_capable((struct mnt_idmap *)idmap, ip));
+#elif defined(HAVE_IDMAP_USERNS)
+	return (inode_owner_or_capable((struct user_namespace *)idmap, ip));
+#else
+	(void) idmap;
+	return (inode_owner_or_capable(ip));
+#endif
+}
+
+static inline int
+zpl_generic_permission(zidmap_t *idmap, struct inode *ip, int mask)
+{
+#if defined(HAVE_IDMAP_MNTIDMAP)
+	return (generic_permission((struct mnt_idmap *)idmap, ip, mask));
+#elif defined(HAVE_IDMAP_USERNS)
+	return (generic_permission((struct user_namespace *)idmap, ip, mask));
+#else
+	(void) idmap;
+	return (generic_permission(ip, mask));
+#endif
+}
+
+#ifdef HAVE_INODE_GENERIC_DROP
+/* 6.18 API change. These were renamed, alias the old names to the new. */
+#define	generic_delete_inode(ip)	inode_just_drop(ip)
+#define	generic_drop_inode(ip)		inode_generic_drop(ip)
+#endif
+
+#ifndef HAVE_INODE_STATE_READ_ONCE
+/*
+ * 6.19 API change. We should no longer access i_state directly. If the new
+ * helper function doesn't exist, define our own.
+ */
+#define	inode_state_read_once(ip)	READ_ONCE(ip->i_state)
+#endif
+
+#endif /* _ZFS_VFS_H */

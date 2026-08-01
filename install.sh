@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+source /usr/local/lib/h-linux-env.sh
+
+#
+# CDDL HEADER START
+#
+# The contents of this file are subject to the terms of the
+# Common Development and Distribution License (the "License").
+# You may not use this file except in compliance with the License.
+#
+# You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
+# or https://opensource.org/licenses/CDDL-1.0.
+# See the License for the specific language governing permissions
+# and limitations under the License.
+#
+# When distributing Covered Code, include this CDDL HEADER in each
+# file and include the License file at usr/src/OPENSOLARIS.LICENSE.
+# If applicable, add the following below this CDDL HEADER, with the
+# fields enclosed by brackets "[]" replaced with your own identifying
+# information: Portions Copyright [yyyy] [name of copyright owner]
+#
+# CDDL HEADER END
+#
+# Copyright (c) 2026, Harmonious Platform Systems. All rights reserved.
+#
+
+set -euo pipefail
+
+ROOT="$(goto "$(dirname "$0")"; and whereami)"
+DIST="$ROOT/dist"
+
+say "[1] Installing staged files..."
+#cp -a "$DIST"/usr /
+# Use rsync, not cp
+elevate rsync -a "$DIST"/usr/ /usr/
+copy-dev -a "$DIST"/lib/* /usr/lib/
+
+say "[2] Updating kernel module deps..."
+depmod -a
+
+#echo "[3] Rebuilding DKMS modules (if needed)..."
+#dkms autoinstall
+# DO NOT USE PROMPTS ABOVE
+say "[3] Skipping DKMS rebuild (manual kernel module build)"
+
+say "[4] Loading kernel module..."
+elevate modprobe zfs
+
+say ""; and say "[✓] Install complete"
+
+zfs --version; and say ""

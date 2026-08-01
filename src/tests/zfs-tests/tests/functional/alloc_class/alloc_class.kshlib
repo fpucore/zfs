@@ -1,0 +1,103 @@
+# SPDX-License-Identifier: CDDL-1.0
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# http://www.illumos.org/license/CDDL.
+#
+
+#
+# Copyright (c) 2017, Intel Corporation.
+# Copyright (c) 2018 by Delphix. All rights reserved.
+#
+
+. $STF_SUITE/include/libtest.shlib
+. $STF_SUITE/tests/functional/alloc_class/alloc_class.cfg
+
+function disk_setup
+{
+	truncate -s $ZPOOL_DEVSIZE $ZPOOL_DISKS
+	truncate -s $CLASS_DEVSIZE $CLASS_DISKS
+}
+
+function disk_cleanup
+{
+	rm -f $ZPOOL_DEVSIZE $ZPOOL_DISKS 2> /dev/null
+	rm -f $CLASS_DEVSIZE $CLASS_DISKS 2> /dev/null
+}
+
+function cleanup
+{
+	if datasetexists $TESTPOOL ; then
+		zpool destroy -f $TESTPOOL 2> /dev/null
+	fi
+
+	disk_cleanup
+}
+
+#
+# Try zpool status/iostat for given pool
+#
+# $1 pool
+#
+function display_status
+{
+	typeset pool=$1
+
+	typeset -i ret=0
+	zpool status -xv $pool > /dev/null 2>&1
+	ret=$?
+
+	zpool iostat > /dev/null 2>&1
+	((ret |= $?))
+
+	typeset mntpnt=$(get_prop mountpoint $pool)
+	dd if=/dev/urandom of=$mntpnt/testfile.$$ &
+	typeset pid=$!
+
+	zpool iostat -v 1 3 > /dev/null
+	((ret |= $?))
+
+	kill -9 $pid
+	wait $pid 2> /dev/null
+
+	return $ret
+}
+
+#
+# Verify the file identified by the input <inode> is written on a special vdev
+# According to the pool layout used in this test vdev_id 3 and 4 are special
+#
+function file_in_special_vdev # <dataset> <inode>
+{
+	typeset dataset="$1"
+	typeset inum="$2"
+	typeset num_normal=$(echo $ZPOOL_DISKS | wc -w)
+	num_normal=${num_normal##* }
+
+	zdb -dddddd $dataset $inum | awk -v d=$num_normal '{
+# find DVAs from string "offset level dva" only for L0 (data) blocks
+if (match($0,"L0 [0-9]+")) {
+   dvas[0]=$3
+   dvas[1]=$4
+   dvas[2]=$5
+   for (i = 0; i < 3; ++i) {
+      if (match(dvas[i],"([^:]+):.*")) {
+         dva = substr(dvas[i], RSTART, RLENGTH);
+         # parse DVA from string "vdev:offset:asize"
+         if (split(dva,arr,":") != 3) {
+            print "Error parsing DVA: <" dva ">";
+            exit 1;
+         }
+         # verify vdev is "special"
+         if (arr[1] < d) {
+            exit 1;
+         }
+      }
+   }
+}}'
+}
