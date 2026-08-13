@@ -32,8 +32,9 @@ DIST="$ROOT/dist"
 say "[1] Installing staged files..."
 #cp -a "$DIST"/usr /
 # Use rsync, not cp
-elevate rsync -a "$DIST"/usr/ /usr/
-copy-dev -a "$DIST"/lib/* /usr/lib/
+#elevate rsync -a "$DIST"/usr/ /usr/  # <<< DO NOT USE THIS LINE, IT WILL CREATE SYS PERMISSIONS PROBLEMS
+elevate rsync -a --no-owner --no-group "$DIST"/usr/ /usr/
+copy-dev "$DIST"/lib/* /usr/lib/
 
 say "[2] Updating kernel module deps..."
 depmod -a
