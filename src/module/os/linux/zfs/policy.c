@@ -1,23 +1,13 @@
 // SPDX-License-Identifier: CDDL-1.0
 /*
- * CDDL HEADER START
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
  *
- * The contents of this file are subject to the terms of the
- * Common Development and Distribution License (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or https://opensource.org/licenses/CDDL-1.0.
- * See the License for the specific language governing permissions
- * and limitations under the License.
- *
- * When distributing Covered Code, include this CDDL HEADER in each
- * file and include the License file at usr/src/OPENSOLARIS.LICENSE.
- * If applicable, add the following below this CDDL HEADER, with the
- * fields enclosed by brackets "[]" replaced with your own identifying
- * information: Portions Copyright [yyyy] [name of copyright owner]
- *
- * CDDL HEADER END
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * https://opensource.org/license/CDDL-1.0.
  */
 
 /*
@@ -25,7 +15,10 @@
  * Copyright 2013, Joyent, Inc. All rights reserved.
  * Copyright (C) 2016 Lawrence Livermore National Security, LLC.
  * Copyright (c) 2025, Rob Norris <robn@despairlabs.com>
- *
+ * Copyright (c) 2026, TrueNAS.
+ */
+
+/*
  * For Linux the vast majority of this enforcement is already handled via
  * the standard Linux VFS permission checks.  However certain administrative
  * commands which bypass the standard mechanisms may need to make use of
@@ -87,21 +80,14 @@ priv_policy_user(const cred_t *cr, int capability, int err)
 }
 
 /*
- * Checks for operations that are either client-only or are used by
- * both clients and servers.
- */
-int
-secpolicy_nfs(const cred_t *cr)
-{
-	return (priv_policy(cr, CAP_SYS_ADMIN, EPERM));
-}
-
-/*
  * Catch all system configuration.
  */
 int
 secpolicy_sys_config(const cred_t *cr, boolean_t checkonly)
 {
+	/* pools can only be manipulated from the global zone */
+	if (crgetzoneid(cr) != GLOBAL_ZONEID)
+		return (EACCES);
 	return (priv_policy(cr, CAP_SYS_ADMIN, EPERM));
 }
 
@@ -241,6 +227,9 @@ secpolicy_vnode_setids_setgids(const cred_t *cr, gid_t gid, zidmap_t *idmap,
 int
 secpolicy_zinject(const cred_t *cr)
 {
+	/* zinject is only in the global zone */
+	if (crgetzoneid(cr) != GLOBAL_ZONEID)
+		return (EACCES);
 	return (priv_policy(cr, CAP_SYS_ADMIN, EACCES));
 }
 
@@ -251,6 +240,14 @@ secpolicy_zinject(const cred_t *cr)
 int
 secpolicy_zfs(const cred_t *cr)
 {
+	/*
+	 * Note that CAP_SYS_ADMIN is effectively "root"-like privileges in
+	 * the given user namespace. Those happen to include mount control
+	 * (matching PRIV_SYS_MOUNT on illumos). There is not a narrower
+	 * permission available. It's important that callers do narrower
+	 * permission checks (eg zone checks) along with this call.
+	 *   -- robn, 2026-08-14
+	 */
 	return (priv_policy(cr, CAP_SYS_ADMIN, EACCES));
 }
 

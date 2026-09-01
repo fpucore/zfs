@@ -1,23 +1,13 @@
 // SPDX-License-Identifier: CDDL-1.0
 /*
- * CDDL HEADER START
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
  *
- * The contents of this file are subject to the terms of the
- * Common Development and Distribution License (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or https://opensource.org/licenses/CDDL-1.0.
- * See the License for the specific language governing permissions
- * and limitations under the License.
- *
- * When distributing Covered Code, include this CDDL HEADER in each
- * file and include the License file at usr/src/OPENSOLARIS.LICENSE.
- * If applicable, add the following below this CDDL HEADER, with the
- * fields enclosed by brackets "[]" replaced with your own identifying
- * information: Portions Copyright [yyyy] [name of copyright owner]
- *
- * CDDL HEADER END
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * https://opensource.org/license/CDDL-1.0.
  */
 
 /*
@@ -1250,14 +1240,16 @@ dump_snapshot(zfs_handle_t *zhp, void *arg)
 	if (sdd->verbosity != 0) {
 		uint64_t size = 0;
 		char fromds[ZFS_MAX_DATASET_NAME_LEN];
+		const char *from = NULL;
 
 		if (sdd->prevsnap[0] != '\0') {
 			(void) strlcpy(fromds, zhp->zfs_name, sizeof (fromds));
 			*(strchr(fromds, '@') + 1) = '\0';
 			(void) strlcat(fromds, sdd->prevsnap, sizeof (fromds));
+			from = fromds;
 		}
-		if (zfs_send_space(zhp, zhp->zfs_name,
-		    sdd->prevsnap[0] ? fromds : NULL, flags, &size) == 0) {
+		if (zfs_send_space(zhp, zhp->zfs_name, from, flags,
+		    &size) == 0) {
 			send_print_verbose(fout, zhp->zfs_name,
 			    sdd->prevsnap[0] ? sdd->prevsnap : NULL,
 			    size, sdd->parsable);
@@ -1986,8 +1978,10 @@ zfs_send_resume_impl_cb_impl(libzfs_handle_t *hdl, sendflags_t *flags,
 		}
 
 		char errbuf[ERRBUFLEN];
+		char sendname[ZFS_MAX_DATASET_NAME_LEN];
 		(void) snprintf(errbuf, sizeof (errbuf), dgettext(TEXT_DOMAIN,
 		    "warning: cannot send '%s'"), zhp->zfs_name);
+		(void) strlcpy(sendname, zhp->zfs_name, sizeof (sendname));
 
 		zfs_close(zhp);
 
@@ -1999,7 +1993,7 @@ zfs_send_resume_impl_cb_impl(libzfs_handle_t *hdl, sendflags_t *flags,
 			    "source key must be loaded"));
 			return (zfs_error(hdl, EZFS_CRYPTOFAILED, errbuf));
 		case ESRCH:
-			if (lzc_exists(zhp->zfs_name)) {
+			if (lzc_exists(sendname)) {
 				zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
 				    "incremental source could not be found"));
 			}

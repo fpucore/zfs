@@ -7,7 +7,7 @@
 #
 # A full copy of the text of the CDDL should have accompanied this
 # source.  A copy of the CDDL is also available via the Internet at
-# http://www.illumos.org/license/CDDL.
+# https://opensource.org/license/CDDL-1.0.
 #
 # This run file contains all of the common functional tests.  When
 # adding a new test consider also adding it to the sanity.run file
@@ -594,6 +594,7 @@ tests = ['zpool_status_001_pos', 'zpool_status_002_pos',
     'zpool_status_003_pos', 'zpool_status_004_pos',
     'zpool_status_005_pos', 'zpool_status_006_pos',
     'zpool_status_007_pos', 'zpool_status_008_pos',
+    'zpool_status_009_pos',
     'zpool_status_features_001_pos']
 tags = ['functional', 'cli_root', 'zpool_status']
 
@@ -684,6 +685,7 @@ tags = ['functional', 'cli_user', 'zpool_status']
 
 [tests/functional/compression]
 tests = ['compress_001_pos', 'compress_002_pos', 'compress_003_pos',
+    'compress_004_pos',
     'l2arc_compressed_arc', 'l2arc_compressed_arc_disabled',
     'l2arc_encrypted', 'l2arc_encrypted_no_compressed_arc']
 tags = ['functional', 'compression']
@@ -1014,7 +1016,8 @@ tests = ['recv_dedup', 'recv_dedup_encrypted_zvol', 'rsend_001_pos',
     'send_encrypted_holds',
     'send_encrypted_props', 'send_encrypted_truncated_files',
     'send_freeobjects', 'send_realloc_files', 'send_realloc_encrypted_files',
-    'send_realloc_dnode_nblkptr',
+    'send_realloc_dnode_nblkptr', 'send_realloc_dnode_mixed',
+    'send_realloc_dnode_resume',
     'send_spill_block', 'send_split_large_block', 'send_holds',
     'send_hole_birth', 'send_mixed_raw',
     'send-wR_encrypted_zvol',
@@ -1162,10 +1165,12 @@ tests = ['zstream_checksum_001_pos',
     'zstream_drop_record_001_pos',
     'zstream_dump_001_pos', 'zstream_dump_002_pos',
     'zstream_dump_003_pos', 'zstream_dump_004_neg',
+    'zstream_raw_001_pos',
     'zstream_recompress_001_pos', 'zstream_recompress_002_pos',
     'zstream_recompress_003_pos', 'zstream_recompress_004_pos',
     'zstream_recompress_005_pos',
     'zstream_redup_001_pos',
+    'zstream_selftest_queue_001_pos',
     'zstream_validate_001_neg']
 tags = ['functional', 'zstream']
 

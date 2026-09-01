@@ -1,16 +1,13 @@
 // SPDX-License-Identifier: CDDL-1.0
 /*
- * CDDL HEADER START
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
  *
- * This file and its contents are supplied under the terms of the Common
- * Development and Distribution License ("CDDL"), version 1.0. You may only use
- * this file in accordance with the terms of version 1.0 of the CDDL.
- *
- * A full copy of the text of the CDDL should have accompanied this source. A
- * copy of the CDDL is also available via the Internet at
- * http://www.illumos.org/license/CDDL.
- *
- * CDDL HEADER END
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * https://opensource.org/license/CDDL-1.0.
  */
 
 /*
@@ -73,6 +70,24 @@ serial_read_stream(const char *filename);
 
 chain_step_t
 serial_write_stream(const char *filename);
+
+/*
+ * When payloads change (e.g., after being decompressed), this function
+ * should always be used to intermediate. It frees the old payload and
+ * updates the accounting for total data in flight. To free the old payload
+ * without replacing it, just pass in NULL.
+ */
+void
+set_payload(void *item_in, void *payload, uint64_t size);
+
+/*
+ * Sometimes, e.g., in the implementation of "zstream raw", we want to take
+ * a payload buffer out of the chain system and hand its control over to some
+ * other system. We need to update the memory accounting but not attempt to
+ * free the buffer.
+ */
+void
+export_payload(void *item_in);
 
 /*
  * Report throughput periodically

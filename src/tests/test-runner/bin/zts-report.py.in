@@ -9,7 +9,7 @@
 #
 # A full copy of the text of the CDDL should have accompanied this
 # source.  A copy of the CDDL is also available via the Internet at
-# http://www.illumos.org/license/CDDL.
+# https://opensource.org/license/CDDL-1.0.
 #
 
 #
@@ -170,7 +170,6 @@ known = {
     'refreserv/refreserv_004_pos': ['FAIL', known_reason],
     'rootpool/setup': ['SKIP', na_reason],
     'rsend/rsend_008_pos': ['SKIP', 6066],
-    'vdev_zaps/vdev_zaps_007_pos': ['FAIL', known_reason],
 }
 
 if sys.platform.startswith('freebsd'):

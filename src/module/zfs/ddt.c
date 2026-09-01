@@ -1,23 +1,13 @@
 // SPDX-License-Identifier: CDDL-1.0
 /*
- * CDDL HEADER START
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
  *
- * The contents of this file are subject to the terms of the
- * Common Development and Distribution License (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or https://opensource.org/licenses/CDDL-1.0.
- * See the License for the specific language governing permissions
- * and limitations under the License.
- *
- * When distributing Covered Code, include this CDDL HEADER in each
- * file and include the License file at usr/src/OPENSOLARIS.LICENSE.
- * If applicable, add the following below this CDDL HEADER, with the
- * fields enclosed by brackets "[]" replaced with your own identifying
- * information: Portions Copyright [yyyy] [name of copyright owner]
- *
- * CDDL HEADER END
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * https://opensource.org/license/CDDL-1.0.
  */
 
 /*
@@ -1474,6 +1464,20 @@ ddt_key_compare(const void *x1, const void *x2)
 	return (0);
 }
 
+/*
+ * Estimate the worst-case amount of MOS data the sync thread may dirty
+ * to add, update or remove one DDT entry: one ZAP leaf block.  This is
+ * an underestimation for entries changing class (two leaves in two
+ * different ZAPs plus indirects), but sequential log flush usually
+ * combines many entries per leaf, erring the other way.
+ */
+uint64_t
+ddt_sync_dirty_est(spa_t *spa)
+{
+	(void) spa;
+	return (1ULL << ddt_zap_default_bs);
+}
+
 /* Create the containing dir for this DDT and bump the feature count */
 static void
 ddt_create_dir(ddt_t *ddt, dmu_tx_t *tx)
@@ -2846,13 +2850,6 @@ ddt_prune_walk(spa_t *spa, uint64_t cutoff, ddt_age_histo_t *histogram)
 		uint64_t class_start =
 		    ddlwe.ddlwe_phys.ddp_flat.ddp_class_start;
 
-		/*
-		 * If this entry is on the log, then the stored entry is stale
-		 * and we should skip it.
-		 */
-		if (ddt_log_find_key(ddt, &ddlwe.ddlwe_key, NULL, NULL))
-			continue;
-
 		/* prune older entries */
 		if (pruning && class_start < cutoff) {
 			if (candidates++ >= zfs_ddt_prunes_per_txg) {
@@ -2868,7 +2865,8 @@ ddt_prune_walk(spa_t *spa, uint64_t cutoff, ddt_age_histo_t *histogram)
 
 		/* build a histogram */
 		if (histogram != NULL) {
-			uint64_t age = (now - class_start) / 3600;
+			uint64_t age = (class_start < now) ?
+			    (now - class_start) / 3600 : 0;
 			int bin = MIN(highbit64(age), HIST_BINS - 1);
 			histogram->dah_entries++;
 			histogram->dah_age_histo[bin]++;
@@ -2922,10 +2920,10 @@ ddt_prune_unique_entries(spa_t *spa, zpool_ddt_prune_unit_t unit,
 	zfs_dbgmsg("prune %llu %s", (u_longlong_t)amount,
 	    unit == ZPOOL_DDT_PRUNE_PERCENTAGE ? "%" : "seconds old or older");
 
+	uint64_t now = gethrestime_sec();
 	if (unit == ZPOOL_DDT_PRUNE_PERCENTAGE) {
 		ddt_age_histo_t histogram;
 		uint64_t oldest = 0;
-		uint64_t now = gethrestime_sec();
 
 		/* Make a pass over DDT to build a histogram */
 		ddt_prune_walk(spa, 0, &histogram);
@@ -2952,9 +2950,11 @@ ddt_prune_unique_entries(spa_t *spa, zpool_ddt_prune_unit_t unit,
 		if (ddt_dump_prune_histogram)
 			ddt_dump_age_histogram(&histogram, cutoff);
 	} else if (unit == ZPOOL_DDT_PRUNE_AGE) {
-		cutoff = gethrestime_sec() - amount;
+		if (amount >= now)
+			return (SET_ERROR(EINVAL));
+		cutoff = now - amount;
 	} else {
-		return (EINVAL);
+		return (SET_ERROR(EINVAL));
 	}
 
 	if (cutoff > 0 && !spa_shutting_down(spa) && !issig()) {

@@ -1,23 +1,13 @@
 // SPDX-License-Identifier: CDDL-1.0
 /*
- * CDDL HEADER START
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
  *
- * The contents of this file are subject to the terms of the
- * Common Development and Distribution License (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or https://opensource.org/licenses/CDDL-1.0.
- * See the License for the specific language governing permissions
- * and limitations under the License.
- *
- * When distributing Covered Code, include this CDDL HEADER in each
- * file and include the License file at usr/src/OPENSOLARIS.LICENSE.
- * If applicable, add the following below this CDDL HEADER, with the
- * fields enclosed by brackets "[]" replaced with your own identifying
- * information: Portions Copyright [yyyy] [name of copyright owner]
- *
- * CDDL HEADER END
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * https://opensource.org/license/CDDL-1.0.
  */
 
 /*
@@ -151,9 +141,7 @@ chain_decompress_writes(queue_item_t *item_in, void *context)
 		    (u_longlong_t)drrw->drr_object,
 		    (u_longlong_t)drrw->drr_offset);
 	}
-	free(item->dp_payload);
-	item->dp_payload = debuff;
-	item->dp_payload_size = drrw->drr_logical_size;
+	set_payload(item, debuff, drrw->drr_logical_size);
 	drrw->drr_compressed_size = 0;
 	drrw->drr_compressiontype = 0;
 }
@@ -184,9 +172,7 @@ chain_compress_writes(queue_item_t *item_in, void *context_in)
 		drrw->drr_compressiontype = 0;
 		drrw->drr_compressed_size = 0;
 	} else {
-		free(item->dp_payload);
-		item->dp_payload = cbuff;
-		item->dp_payload_size = csize;
+		set_payload(item, cbuff, csize);
 		drrw->drr_compressed_size = csize;
 		drrw->drr_compressiontype = context->cs_type;
 	}
@@ -364,7 +350,7 @@ zstream_do_recompress(int argc, char *argv[])
 {
 	int c;
 	int level = ZIO_COMPLEVEL_DEFAULT;
-	uint_t num_threads = 0;
+	int num_threads = 0;
 
 	chain_attrs_t attrs = { .ca_command_opts = CA_FORBID_DEDUP };
 
@@ -377,7 +363,7 @@ zstream_do_recompress(int argc, char *argv[])
 			}
 			break;
 		case 't':
-			if (sscanf(optarg, "%u", &num_threads) != 1) {
+			if (sscanf(optarg, "%d", &num_threads) != 1) {
 				warnx("failed to parse num_threads '%s'",
 				    optarg);
 				zstream_usage();
@@ -387,7 +373,6 @@ zstream_do_recompress(int argc, char *argv[])
 		case '?':
 			warnx("invalid option '%c'", optopt);
 			zstream_usage();
-			break;
 		}
 	}
 

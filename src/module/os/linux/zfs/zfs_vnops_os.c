@@ -1,23 +1,13 @@
 // SPDX-License-Identifier: CDDL-1.0
 /*
- * CDDL HEADER START
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
  *
- * The contents of this file are subject to the terms of the
- * Common Development and Distribution License (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or https://opensource.org/licenses/CDDL-1.0.
- * See the License for the specific language governing permissions
- * and limitations under the License.
- *
- * When distributing Covered Code, include this CDDL HEADER in each
- * file and include the License file at usr/src/OPENSOLARIS.LICENSE.
- * If applicable, add the following below this CDDL HEADER, with the
- * fields enclosed by brackets "[]" replaced with your own identifying
- * information: Portions Copyright [yyyy] [name of copyright owner]
- *
- * CDDL HEADER END
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * https://opensource.org/license/CDDL-1.0.
  */
 
 /*
@@ -735,8 +725,7 @@ top:
 			goto out;
 		have_acl = B_TRUE;
 
-		if (S_ISREG(vap->va_mode) || S_ISDIR(vap->va_mode))
-			projid = zfs_inherit_projid(dzp);
+		projid = zfs_inherit_projid(dzp);
 		if (zfs_acl_ids_overquota(zfsvfs, &acl_ids, projid)) {
 			zfs_acl_ids_free(&acl_ids);
 			error = SET_ERROR(EDQUOT);
@@ -935,8 +924,7 @@ top:
 		goto out;
 	have_acl = B_TRUE;
 
-	if (S_ISREG(vap->va_mode) || S_ISDIR(vap->va_mode))
-		projid = zfs_inherit_projid(dzp);
+	projid = zfs_inherit_projid(dzp);
 	if (zfs_acl_ids_overquota(zfsvfs, &acl_ids, projid)) {
 		zfs_acl_ids_free(&acl_ids);
 		error = SET_ERROR(EDQUOT);
@@ -3016,8 +3004,16 @@ top:
 	 * not only the project ID, but also the ZFS_PROJINHERIT flag. Under
 	 * such case, we only allow renames into our tree when the project
 	 * IDs are the same.
+	 *
+	 * A rename within a single directory leaves the object exactly where
+	 * it already is, so it cannot move it between projects and is always
+	 * allowed.  Objects created before symlinks and other non-regular
+	 * files began inheriting a project ID carry none of their own, and
+	 * would otherwise not be renameable within the very directory that
+	 * holds them -- which breaks "ln -sfn", implemented as
+	 * create-under-a-temporary-name-then-rename.
 	 */
-	if (tdzp->z_pflags & ZFS_PROJINHERIT &&
+	if (sdzp != tdzp && tdzp->z_pflags & ZFS_PROJINHERIT &&
 	    tdzp->z_projid != szp->z_projid) {
 		error = SET_ERROR(EXDEV);
 		goto out;
@@ -3078,11 +3074,8 @@ top:
 
 	/* Set up inode creation for RENAME_WHITEOUT. */
 	if (rflags & RENAME_WHITEOUT) {
-		/*
-		 * Whiteout files are not regular files or directories, so to
-		 * match zfs_create() we do not inherit the project id.
-		 */
-		uint64_t wo_projid = ZFS_DEFAULT_PROJID;
+		/* Match zfs_create(): the whiteout joins its directory. */
+		uint64_t wo_projid = zfs_inherit_projid(sdzp);
 
 		error = zfs_zaccess_idmap(sdzp, ACE_ADD_FILE, 0, B_FALSE,
 		    cr, idmap);
@@ -3419,7 +3412,7 @@ top:
 		return (error);
 	}
 
-	if (zfs_acl_ids_overquota(zfsvfs, &acl_ids, ZFS_DEFAULT_PROJID)) {
+	if (zfs_acl_ids_overquota(zfsvfs, &acl_ids, zfs_inherit_projid(dzp))) {
 		zfs_acl_ids_free(&acl_ids);
 		zfs_dirent_unlock(dl);
 		zfs_exit(zfsvfs, FTAG);

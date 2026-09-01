@@ -1,29 +1,20 @@
 // SPDX-License-Identifier: CDDL-1.0
 /*
- * CDDL HEADER START
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
  *
- * The contents of this file are subject to the terms of the
- * Common Development and Distribution License (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or https://opensource.org/licenses/CDDL-1.0.
- * See the License for the specific language governing permissions
- * and limitations under the License.
- *
- * When distributing Covered Code, include this CDDL HEADER in each
- * file and include the License file at usr/src/OPENSOLARIS.LICENSE.
- * If applicable, add the following below this CDDL HEADER, with the
- * fields enclosed by brackets "[]" replaced with your own identifying
- * information: Portions Copyright [yyyy] [name of copyright owner]
- *
- * CDDL HEADER END
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * https://opensource.org/license/CDDL-1.0.
  */
 
 /*
  * Copyright (C) 2011 Lawrence Livermore National Security, LLC.
  * Copyright (C) 2015 Jörg Thalheim.
  * Copyright (c) 2025, Rob Norris <robn@despairlabs.com>
+ * Copyright (c) 2026, TrueNAS.
  */
 
 #ifndef _ZFS_VFS_H
@@ -261,6 +252,51 @@ zpl_generic_permission(zidmap_t *idmap, struct inode *ip, int mask)
  * helper function doesn't exist, define our own.
  */
 #define	inode_state_read_once(ip)	READ_ONCE(ip->i_state)
+#endif
+
+/* 6.18 compat: 4th arg removed; function will do strlen() internally. */
+#ifdef HAVE_VFS_PARSE_FS_STRING_3ARGS
+#define	zpl_vfs_parse_fs_string(fc, key, val)   \
+	vfs_parse_fs_string((fc), (key), (val))
+#else
+#define	zpl_vfs_parse_fs_string(fc, key, val)   \
+	vfs_parse_fs_string((fc), (key), (val), (val != NULL) ? strlen(val) : 0)
+#endif
+
+#if defined(HAVE_FOLLOW_DOWN_FLAGS)
+static inline int
+zpl_follow_down(struct path *path, unsigned int flags)
+{
+	return (follow_down(path, flags));
+}
+#elif defined(HAVE_VFS_PATH_LOOKUP_EXPORTED)
+/*
+ * vfs_path_lookup() has always been exported, but not always published.
+ */
+extern int vfs_path_lookup(struct dentry *, struct vfsmount *,
+    const char *, unsigned int, struct path *);
+static inline int
+zpl_follow_down(struct path *path, unsigned int flags)
+{
+	/*
+	 * Simulate follow_down() by asking for a name lookup for "/" under the
+	 * given path.
+	 */
+	struct path opath;
+	int err = vfs_path_lookup(path->dentry, path->mnt, "/",
+	    LOOKUP_DOWN|flags, &opath);
+	if (err == 0) {
+		/* Trade the original path for the new one. */
+		path_put(path);
+		path->dentry = opath.dentry;
+		path->mnt = opath.mnt;
+		path_get(path);
+		path_put(&opath);
+	}
+	return (err);
+}
+#else
+#error "Unsupported kernel: no fallback implementation for follow_down()"
 #endif
 
 #endif /* _ZFS_VFS_H */

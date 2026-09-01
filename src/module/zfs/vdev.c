@@ -1,23 +1,13 @@
 // SPDX-License-Identifier: CDDL-1.0
 /*
- * CDDL HEADER START
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
  *
- * The contents of this file are subject to the terms of the
- * Common Development and Distribution License (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or https://opensource.org/licenses/CDDL-1.0.
- * See the License for the specific language governing permissions
- * and limitations under the License.
- *
- * When distributing Covered Code, include this CDDL HEADER in each
- * file and include the License file at usr/src/OPENSOLARIS.LICENSE.
- * If applicable, add the following below this CDDL HEADER, with the
- * fields enclosed by brackets "[]" replaced with your own identifying
- * information: Portions Copyright [yyyy] [name of copyright owner]
- *
- * CDDL HEADER END
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * https://opensource.org/license/CDDL-1.0.
  */
 
 /*
@@ -32,6 +22,7 @@
  * Copyright (c) 2021, 2025, Klara, Inc.
  * Copyright (c) 2021, 2023 Hewlett Packard Enterprise Development LP.
  * Copyright (c) 2026, Seagate Technology, LLC.
+ * Copyright (c) 2026, TrueNAS.
  */
 
 #include <sys/zfs_context.h>
@@ -564,10 +555,15 @@ int
 vdev_count_leaves(spa_t *spa)
 {
 	int rc;
+	boolean_t held;
 
-	spa_config_enter(spa, SCL_VDEV, FTAG, RW_READER);
+	held = (spa_config_held(spa, SCL_VDEV, RW_WRITER) == SCL_VDEV);
+
+	if (!held)
+		spa_config_enter(spa, SCL_VDEV, FTAG, RW_READER);
 	rc = vdev_count_leaves_impl(spa->spa_root_vdev);
-	spa_config_exit(spa, SCL_VDEV, FTAG);
+	if (!held)
+		spa_config_exit(spa, SCL_VDEV, FTAG);
 
 	return (rc);
 }
@@ -1997,14 +1993,23 @@ vdev_load_child(void *arg)
 	vd->vdev_load_error = vdev_load(vd);
 }
 
+typedef struct {
+	vdev_t	*voc_vdev;
+	cred_t	*voc_cred;
+} vdev_open_child_t;
+
 static void
 vdev_open_child(void *arg)
 {
-	vdev_t *vd = arg;
+	vdev_open_child_t *voc = arg;
+	vdev_t *vd = voc->voc_vdev;
 
 	vd->vdev_open_thread = curthread;
-	vd->vdev_open_error = vdev_open(vd);
+	vd->vdev_open_error = vdev_open(vd, voc->voc_cred);
 	vd->vdev_open_thread = NULL;
+
+	crfree(voc->voc_cred);
+	kmem_free(voc, sizeof (vdev_open_child_t));
 }
 
 static boolean_t
@@ -2038,7 +2043,8 @@ vdev_default_open_children_func(vdev_t *vd)
  * deadlock when the current thread is holding the spa_namespace_lock.
  */
 static void
-vdev_open_children_impl(vdev_t *vd, vdev_open_children_func_t *open_func)
+vdev_open_children_impl(vdev_t *vd, cred_t *cred,
+    vdev_open_children_func_t *open_func)
 {
 	int children = vd->vdev_children;
 
@@ -2053,10 +2059,15 @@ vdev_open_children_impl(vdev_t *vd, vdev_open_children_func_t *open_func)
 			continue;
 
 		if (tq == NULL || vdev_uses_zvols(vd)) {
-			cvd->vdev_open_error = vdev_open(cvd);
+			cvd->vdev_open_error = vdev_open(cvd, cred);
 		} else {
+			vdev_open_child_t *voc =
+			    kmem_alloc(sizeof (vdev_open_child_t), KM_SLEEP);
+			voc->voc_vdev = cvd;
+			voc->voc_cred = cred;
+			crhold(cred);
 			VERIFY(taskq_dispatch(tq, vdev_open_child,
-			    cvd, TQ_SLEEP) != TASKQID_INVALID);
+			    voc, TQ_SLEEP) != TASKQID_INVALID);
 		}
 	}
 
@@ -2079,18 +2090,19 @@ vdev_open_children_impl(vdev_t *vd, vdev_open_children_func_t *open_func)
  * Open all child vdevs.
  */
 void
-vdev_open_children(vdev_t *vd)
+vdev_open_children(vdev_t *vd, cred_t *cred)
 {
-	vdev_open_children_impl(vd, vdev_default_open_children_func);
+	vdev_open_children_impl(vd, cred, vdev_default_open_children_func);
 }
 
 /*
  * Conditionally open a subset of child vdevs.
  */
 void
-vdev_open_children_subset(vdev_t *vd, vdev_open_children_func_t *open_func)
+vdev_open_children_subset(vdev_t *vd, cred_t *cred,
+    vdev_open_children_func_t *open_func)
 {
-	vdev_open_children_impl(vd, open_func);
+	vdev_open_children_impl(vd, cred, open_func);
 }
 
 /*
@@ -2166,7 +2178,7 @@ vdev_ashift_optimize(vdev_t *vd)
  * Prepare a virtual device for access.
  */
 int
-vdev_open(vdev_t *vd)
+vdev_open(vdev_t *vd, cred_t *cred)
 {
 	spa_t *spa = vd->vdev_spa;
 	int error;
@@ -2207,7 +2219,7 @@ vdev_open(vdev_t *vd)
 	}
 
 	error = vd->vdev_ops->vdev_op_open(vd, &osize, &max_osize,
-	    &logical_ashift, &physical_ashift);
+	    &logical_ashift, &physical_ashift, cred);
 
 	/* Keep the device in removed state if unplugged */
 	if (error == ENOENT && vd->vdev_removed) {
@@ -2441,6 +2453,47 @@ vdev_open(vdev_t *vd)
 	return (0);
 }
 
+/*
+ * Note whether the labels at the end of the device describe a different pool
+ * than the ones at its head, which is what a vdev grown over the remains of
+ * an older pool is left with until the next sync rewrites them.  The head
+ * labels are the ones to believe: their offsets are fixed, while the trailing
+ * pair moves with the size of the device.
+ *
+ * The trailing labels are read without a txg bound: which pool a label names
+ * does not depend on how recent it is, and a leftover one is quite likely to
+ * be from beyond our own txg.
+ */
+static void
+vdev_check_tail_labels(vdev_t *vd, nvlist_t *head)
+{
+	nvlist_t *tail;
+	uint64_t head_guid, tail_guid;
+
+	vd->vdev_tail_labels_foreign = B_FALSE;
+
+	/* A distributed spare's label is generated, not read off a disk. */
+	if (vd->vdev_ops == &vdev_draid_spare_ops)
+		return;
+
+	if (nvlist_lookup_uint64(head, ZPOOL_CONFIG_POOL_GUID, &head_guid) != 0)
+		return;
+
+	tail = vdev_label_read_config(vd, UINT64_MAX, VDEV_LABELS_TAIL);
+	if (tail == NULL)
+		return;
+
+	if (nvlist_lookup_uint64(tail, ZPOOL_CONFIG_POOL_GUID,
+	    &tail_guid) == 0 && tail_guid != head_guid) {
+		vd->vdev_tail_labels_foreign = B_TRUE;
+		vdev_dbgmsg(vd, "labels 2 and 3 belong to pool_guid %llu, not "
+		    "%llu; ignoring them until they are rewritten",
+		    (u_longlong_t)tail_guid, (u_longlong_t)head_guid);
+	}
+
+	nvlist_free(tail);
+}
+
 static void
 vdev_validate_child(void *arg)
 {
@@ -2523,7 +2576,27 @@ vdev_validate(vdev_t *vd)
 	else
 		txg = spa_last_synced_txg(spa);
 
-	if ((label = vdev_label_read_config(vd, txg)) == NULL) {
+	/*
+	 * Labels 2 and 3 live at offsets relative to the end of the device, so
+	 * growing one moves them onto space this pool has never written: what
+	 * is found there belongs to whatever used the device before us, as
+	 * vdev_copy_uberblocks() already notes for the uberblock rings.  Such
+	 * a leftover label is perfectly well formed and routinely carries a
+	 * higher txg than our own, which is all vdev_label_read_config() ranks
+	 * labels on, so it wins and the vdev is failed for belonging to a
+	 * foreign pool.  Every label states the same identity, so read it from
+	 * the two whose position does not depend on the size of the device,
+	 * and fall back to the trailing pair only if those cannot be read.
+	 */
+	label = vdev_label_read_config(vd, txg, VDEV_LABELS_HEAD);
+	if (label != NULL) {
+		vdev_check_tail_labels(vd, label);
+	} else {
+		vd->vdev_tail_labels_foreign = B_FALSE;
+		label = vdev_label_read_config(vd, txg, VDEV_LABELS_TAIL);
+	}
+
+	if (label == NULL) {
 		vdev_set_state(vd, B_FALSE, VDEV_STATE_CANT_OPEN,
 		    VDEV_AUX_BAD_LABEL);
 		vdev_dbgmsg(vd, "vdev_validate: failed reading config for "
@@ -2899,7 +2972,7 @@ vdev_reopen(vdev_t *vd)
 	/* set the reopening flag unless we're taking the vdev offline */
 	vd->vdev_reopening = !vd->vdev_offline;
 	vdev_close(vd);
-	(void) vdev_open(vd);
+	(void) vdev_open(vd, CRED());
 
 	/*
 	 * Call vdev_validate() here to make sure we have the same device.
@@ -2954,7 +3027,7 @@ vdev_create(vdev_t *vd, uint64_t txg, boolean_t isreplacing)
 	 * For a create, however, we want to fail the request if
 	 * there are any components we can't open.
 	 */
-	error = vdev_open(vd);
+	error = vdev_open(vd, CRED());
 
 	if (error || vd->vdev_state != VDEV_STATE_HEALTHY) {
 		vdev_close(vd);
@@ -4151,7 +4224,8 @@ vdev_validate_aux(vdev_t *vd)
 	if (!vdev_readable(vd))
 		return (0);
 
-	if ((label = vdev_label_read_config(vd, -1ULL)) == NULL) {
+	if ((label = vdev_label_read_config(vd, -1ULL,
+	    VDEV_LABELS_ALL)) == NULL) {
 		vdev_set_state(vd, B_TRUE, VDEV_STATE_CANT_OPEN,
 		    VDEV_AUX_CORRUPT_DATA);
 		return (-1);
@@ -7081,6 +7155,12 @@ ZFS_MODULE_PARAM(zfs_vdev, zfs_vdev_, min_ms_count, UINT, ZMOD_RW,
 
 ZFS_MODULE_PARAM(zfs_vdev, zfs_vdev_, ms_count_limit, UINT, ZMOD_RW,
 	"Practical upper limit of total metaslabs per top-level vdev");
+
+ZFS_MODULE_PARAM(zfs, zfs_vdev_, dtl_sm_blksz, INT, ZMOD_RW,
+	"Block size for DTL space map.  Power of 2 greater than 4096.");
+
+ZFS_MODULE_PARAM(zfs, zfs_vdev_, standard_sm_blksz, INT, ZMOD_RW,
+	"Block size for standard space map.  Power of 2 greater than 4096.");
 
 ZFS_MODULE_PARAM(zfs, zfs_, slow_io_events_per_second, UINT, ZMOD_RW,
 	"Rate limit slow IO (delay) events to this many per second");

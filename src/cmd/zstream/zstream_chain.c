@@ -1,30 +1,25 @@
 // SPDX-License-Identifier: CDDL-1.0
 /*
- * CDDL HEADER START
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
  *
- * This file and its contents are supplied under the terms of the Common
- * Development and Distribution License ("CDDL"), version 1.0. You may only use
- * this file in accordance with the terms of version 1.0 of the CDDL.
- *
- * A full copy of the text of the CDDL should have accompanied this source. A
- * copy of the CDDL is also available via the Internet at
- * http://www.illumos.org/license/CDDL.
- *
- * CDDL HEADER END
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * https://opensource.org/license/CDDL-1.0.
  */
 
 /*
  * Copyright (c) 2026 by Garth Snyder. All rights reserved.
  */
 
-#include <time.h>
 #include <assert.h>
 #include <err.h>
 #include <libspl.h>
 #include <pthread.h>
 #include <stddef.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <sys/abd.h>
 #include <sys/param.h>
 #include <sys/stdtypes.h>
@@ -35,6 +30,7 @@
 
 #include "zstream_chain.h"
 #include "zstream_queue.h"
+#include "zstream_util.h"
 
 #define	MAX_CHAIN_LENGTH 32
 
@@ -59,8 +55,6 @@ typedef struct {
 	zstream_queue_t	*wc_in_queue;
 	zstream_queue_t	*wc_out_queue;
 } worker_context_t;
-
-typedef void *chain_worker_f(void *);
 
 chain_attrs_t *chain_attrs;
 
@@ -97,8 +91,9 @@ libraries_fini(void)
  * Body function for worker threads
  */
 static void *
-zstream_chain_worker(worker_context_t *ctxt)
+zstream_chain_worker(void *ctxt_in)
 {
+	worker_context_t *ctxt = (worker_context_t *)ctxt_in;
 	uint8_t buffer[ctxt->wc_buffer_size];
 	boolean_t done = B_FALSE;
 
@@ -265,13 +260,10 @@ zstream_chain_exec(zstream_chain_t chain, chain_attrs_t *attrs)
 
 	/* Spawn threads */
 	for (int i = 0; i < num_workers; i++) {
-		char buff[32];
-		int ret = pthread_create(&worker_threads[i], NULL,
-		    (chain_worker_f *)zstream_chain_worker,
-		    &contexts[i]);
-		VERIFY3S(ret, ==, 0);
-		snprintf(buff, sizeof (buff), "chain-%d", i);
-		pthread_setname_np(worker_threads[i], buff);
+		char name[32];
+		snprintf(name, sizeof (name), "chain-%d", i);
+		worker_threads[i] = safe_create_thread(zstream_chain_worker,
+		    &contexts[i], name, B_FALSE);
 	}
 
 	/* Reap threads */

@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: CDDL-1.0
 /*
- * CDDL HEADER START
- *
  * This file and its contents are supplied under the terms of the
  * Common Development and Distribution License ("CDDL"), version 1.0.
  * You may only use this file in accordance with the terms of version
@@ -9,9 +7,7 @@
  *
  * A full copy of the text of the CDDL should have accompanied this
  * source.  A copy of the CDDL is also available via the Internet at
- * http://www.illumos.org/license/CDDL.
- *
- * CDDL HEADER END
+ * https://opensource.org/license/CDDL-1.0.
  */
 
 /*
@@ -157,13 +153,12 @@ chain_redup_writes(void *item_in, void *context_in)
 		VERIFY3U(drrw->drr_object, ==, drrwb.drr_refobject);
 		VERIFY3U(drrw->drr_offset, ==, drrwb.drr_refoffset);
 
-		item->dp_payload_size = DRR_WRITE_PAYLOAD_SIZE(drrw);
-		item->dp_payload = safe_malloc(item->dp_payload_size);
-
-		size_t n_read = fread(item->dp_payload, item->dp_payload_size,
-		    1, context->rc_fp);
+		uint64_t size = DRR_WRITE_PAYLOAD_SIZE(drrw);
+		uint8_t *buff = safe_malloc(size);
+		size_t n_read = fread(buff, size, 1, context->rc_fp);
 		if (n_read != 1)
 			err(1, "read of prior payload failed");
+		set_payload(item, buff, size);
 
 		drrw->drr_toguid = drrwb.drr_toguid;
 		drrw->drr_object = drrwb.drr_object;
@@ -213,7 +208,6 @@ zstream_do_redup(int argc, char *argv[])
 		case '?':
 			warnx("invalid option '%c'", optopt);
 			zstream_usage();
-			break;
 		}
 	}
 

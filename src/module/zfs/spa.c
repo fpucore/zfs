@@ -1,23 +1,13 @@
 // SPDX-License-Identifier: CDDL-1.0
 /*
- * CDDL HEADER START
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
  *
- * The contents of this file are subject to the terms of the
- * Common Development and Distribution License (the "License").
- * You may not use this file except in compliance with the License.
- *
- * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or https://opensource.org/licenses/CDDL-1.0.
- * See the License for the specific language governing permissions
- * and limitations under the License.
- *
- * When distributing Covered Code, include this CDDL HEADER in each
- * file and include the License file at usr/src/OPENSOLARIS.LICENSE.
- * If applicable, add the following below this CDDL HEADER, with the
- * fields enclosed by brackets "[]" replaced with your own identifying
- * information: Portions Copyright [yyyy] [name of copyright owner]
- *
- * CDDL HEADER END
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * https://opensource.org/license/CDDL-1.0.
  */
 
 /*
@@ -2582,7 +2572,7 @@ spa_load_spares(spa_t *spa)
 		vd->vdev_top = vd;
 		vd->vdev_aux = &spa->spa_spares;
 
-		if (vdev_open(vd) != 0)
+		if (vdev_open(vd, CRED()) != 0)
 			continue;
 
 		if (vdev_validate_aux(vd) == 0)
@@ -2695,7 +2685,7 @@ spa_load_l2cache(spa_t *spa)
 
 			spa_l2cache_activate(vd);
 
-			if (vdev_open(vd) != 0)
+			if (vdev_open(vd, CRED()) != 0)
 				continue;
 
 			(void) vdev_validate_aux(vd);
@@ -4041,8 +4031,17 @@ spa_activity_check_duration(spa_t *spa, uberblock_t *ub)
  * - ENXIO	- system hostid not set
  * - ESRCH	- activity check skipped
  * - EREMOTEIO	- activity check detected active pool
+ * - ENODEV	- claim could not be written to a device the config expects
+ * - EIO	- claim writes were issued to present devices and failed
  * - EINTR	- activity check interrupted
  * - 0		- activity check detected no activity
+ *
+ * ENODEV and EIO are reported with ZPOOL_CONFIG_MMP_STATE set to
+ * MMP_STATE_ACTIVE even though no remote host was seen.  Nothing is actually
+ * active in either case, but an older zpool(8) knows only the two existing
+ * states and reaches zfs_error_aux() with an uninitialized buffer for any
+ * other value, so the state is kept as one it understands and the real cause
+ * travels in the result.
  */
 static void
 spa_activity_set_load_info(spa_t *spa, nvlist_t *label, mmp_state_t state,
@@ -4111,6 +4110,20 @@ spa_ld_activity_result(spa_t *spa, int error, const char *state)
 		cmn_err(CE_WARN, "pool '%s' system hostid not set, "
 		    "aborted import during %s", spa_load_name(spa), state);
 		/* Userspace expects EREMOTEIO for no system hostid */
+		error = EREMOTEIO;
+		break;
+	case ENODEV:
+		cmn_err(CE_WARN, "pool '%s' could not claim every device the "
+		    "config expects present, aborted import during %s; if a "
+		    "device is permanently gone see 'zhack mmp reclaim'",
+		    spa_load_name(spa), state);
+		/* Userspace expects EREMOTEIO for a failed claim */
+		error = EREMOTEIO;
+		break;
+	case EIO:
+		cmn_err(CE_WARN, "pool '%s' had I/O errors writing the claim, "
+		    "aborted import during %s", spa_load_name(spa), state);
+		/* Userspace expects EREMOTEIO for a failed claim */
 		error = EREMOTEIO;
 		break;
 	case EREMOTEIO:
@@ -4242,6 +4255,9 @@ spa_activity_check_tryimport(spa_t *spa, uberblock_t *spa_ub,
  * error results:
  *          0 - no activity detected
  *  EREMOTEIO - remote activity detected
+ *     ENODEV - the claim could not be written to a device the config
+ *              expects to be present
+ *        EIO - the claim writes were issued to present devices and failed
  *      EINTR - user canceled the operation
  */
 static int
@@ -4323,7 +4339,13 @@ spa_activity_check_claim(spa_t *spa)
 		if (error) {
 			spa_load_failed(spa, "mmp: uberblock claim "
 			    "failed, error=%d", error);
-			error = SET_ERROR(EREMOTEIO);
+			/*
+			 * ENODEV and EIO are both kept distinct from the
+			 * EREMOTEIO returned when another host is seen below.
+			 * Failing to write the claim is not evidence of a
+			 * remote host, and only the ENODEV case has a
+			 * recovery.
+			 */
 			break;
 		}
 
@@ -4367,9 +4389,14 @@ out:
 	spa->spa_mmp.mmp_claim_ns = gethrtime() - start_time;
 	(void) spa_import_progress_set_mmp_check(spa_guid(spa), 0);
 
-	if (error == EREMOTEIO) {
+	/*
+	 * A claim shortfall reaches userspace as EREMOTEIO exactly as remote
+	 * activity does, so an older zpool(8) sees no change.  The cause
+	 * travels in the result for a zpool(8) which knows to read it.
+	 */
+	if (error == EREMOTEIO || error == ENODEV || error == EIO) {
 		spa_activity_set_load_info(spa, mmp_label,
-		    MMP_STATE_ACTIVE, 0, 0, EREMOTEIO);
+		    MMP_STATE_ACTIVE, 0, 0, error);
 	} else {
 		spa_activity_set_load_info(spa, mmp_label,
 		    MMP_STATE_INACTIVE, spa_ub.ub_txg, MMP_SEQ(&spa_ub), 0);
@@ -4694,7 +4721,7 @@ spa_ld_open_vdevs(spa_t *spa)
 	    MAX(zfs_max_missing_tvds, spa->spa_missing_tvds_allowed);
 
 	spa_config_enter(spa, SCL_ALL, FTAG, RW_WRITER);
-	error = vdev_open(spa->spa_root_vdev);
+	error = vdev_open(spa->spa_root_vdev, CRED());
 	spa_config_exit(spa, SCL_ALL, FTAG);
 
 	if (spa->spa_missing_tvds != 0) {
@@ -5521,15 +5548,25 @@ spa_ld_open_aux_vdevs(spa_t *spa, spa_import_type_t type)
 		return (spa_vdev_err(rvd, VDEV_AUX_CORRUPT_DATA, EIO));
 	if (error == 0 && type != SPA_IMPORT_ASSEMBLE) {
 		ASSERT(spa_version(spa) >= SPA_VERSION_SPARES);
-		if (load_nvlist(spa, spa->spa_spares.sav_object,
-		    &spa->spa_spares.sav_config) != 0) {
-			spa_load_failed(spa, "error loading spares nvlist");
-			return (spa_vdev_err(rvd, VDEV_AUX_CORRUPT_DATA, EIO));
+		error = load_nvlist(spa, spa->spa_spares.sav_object,
+		    &spa->spa_spares.sav_config);
+		if (error != 0) {
+			if (!zfs_recover && spa_writeable(spa)) {
+				spa_load_failed(spa, "error loading spares "
+				    "nvlist [error=%d]", error);
+				return (spa_vdev_err(rvd,
+				    VDEV_AUX_CORRUPT_DATA, EIO));
+			}
+			spa_load_note(spa, "ignoring spares nvlist "
+			    "[error=%d], no spares will be available", error);
+			/* Leak the object, its dnode may be unreadable. */
+			spa->spa_spares.sav_object = 0;
+			spa->spa_spares.sav_sync = B_TRUE;
+		} else {
+			spa_config_enter(spa, SCL_ALL, FTAG, RW_WRITER);
+			spa_load_spares(spa);
+			spa_config_exit(spa, SCL_ALL, FTAG);
 		}
-
-		spa_config_enter(spa, SCL_ALL, FTAG, RW_WRITER);
-		spa_load_spares(spa);
-		spa_config_exit(spa, SCL_ALL, FTAG);
 	} else if (error == 0) {
 		spa->spa_spares.sav_sync = B_TRUE;
 	}
@@ -5543,15 +5580,25 @@ spa_ld_open_aux_vdevs(spa_t *spa, spa_import_type_t type)
 		return (spa_vdev_err(rvd, VDEV_AUX_CORRUPT_DATA, EIO));
 	if (error == 0 && type != SPA_IMPORT_ASSEMBLE) {
 		ASSERT(spa_version(spa) >= SPA_VERSION_L2CACHE);
-		if (load_nvlist(spa, spa->spa_l2cache.sav_object,
-		    &spa->spa_l2cache.sav_config) != 0) {
-			spa_load_failed(spa, "error loading l2cache nvlist");
-			return (spa_vdev_err(rvd, VDEV_AUX_CORRUPT_DATA, EIO));
+		error = load_nvlist(spa, spa->spa_l2cache.sav_object,
+		    &spa->spa_l2cache.sav_config);
+		if (error != 0) {
+			if (!zfs_recover && spa_writeable(spa)) {
+				spa_load_failed(spa, "error loading l2cache "
+				    "nvlist [error=%d]", error);
+				return (spa_vdev_err(rvd,
+				    VDEV_AUX_CORRUPT_DATA, EIO));
+			}
+			spa_load_note(spa, "ignoring l2cache nvlist "
+			    "[error=%d], no l2cache will be available", error);
+			/* Leak the object, its dnode may be unreadable. */
+			spa->spa_l2cache.sav_object = 0;
+			spa->spa_l2cache.sav_sync = B_TRUE;
+		} else {
+			spa_config_enter(spa, SCL_ALL, FTAG, RW_WRITER);
+			spa_load_l2cache(spa);
+			spa_config_exit(spa, SCL_ALL, FTAG);
 		}
-
-		spa_config_enter(spa, SCL_ALL, FTAG, RW_WRITER);
-		spa_load_l2cache(spa);
-		spa_config_exit(spa, SCL_ALL, FTAG);
 	} else if (error == 0) {
 		spa->spa_l2cache.sav_sync = B_TRUE;
 	}
@@ -6946,7 +6993,7 @@ spa_validate_aux_devs(spa_t *spa, nvlist_t *nvroot, uint64_t crtxg, int mode,
 
 		vd->vdev_top = vd;
 
-		if ((error = vdev_open(vd)) == 0 &&
+		if ((error = vdev_open(vd, CRED())) == 0 &&
 		    (error = vdev_label_init(vd, crtxg, label)) == 0) {
 			fnvlist_add_uint64(dev[i], ZPOOL_CONFIG_GUID,
 			    vd->vdev_guid);
@@ -8547,6 +8594,12 @@ spa_vdev_attach(spa_t *spa, uint64_t guid, nvlist_t *nvroot, int replacing,
 	dtl_max_txg = txg + TXG_CONCURRENT_STATES;
 
 	if (raidz) {
+		dmu_tx_t *tx = dmu_tx_create_assigned(spa->spa_dsl_pool,
+		    txg);
+		dsl_sync_task_nowait(spa->spa_dsl_pool, vdev_raidz_attach_sync,
+		    newvd, tx);
+		dmu_tx_commit(tx);
+
 		/*
 		 * Wait for the youngest allocations and frees to sync,
 		 * and then wait for the deferral of those frees to finish.
@@ -8564,12 +8617,7 @@ spa_vdev_attach(spa_t *spa, uint64_t guid, nvlist_t *nvroot, int replacing,
 
 		vdev_dirty_leaves(tvd, VDD_DTL, dtl_max_txg);
 		vdev_config_dirty(tvd);
-
-		dmu_tx_t *tx = dmu_tx_create_assigned(spa->spa_dsl_pool,
-		    dtl_max_txg);
-		dsl_sync_task_nowait(spa->spa_dsl_pool, vdev_raidz_attach_sync,
-		    newvd, tx);
-		dmu_tx_commit(tx);
+		zthr_wakeup(spa->spa_raidz_expand_zthr);
 	} else {
 		vdev_dtl_dirty(newvd, DTL_MISSING, TXG_INITIAL,
 		    dtl_max_txg - TXG_INITIAL);
@@ -9137,6 +9185,46 @@ spa_vdev_trim(spa_t *spa, nvlist_t *nv, uint64_t cmd_type, uint64_t rate,
 	return (total_errors);
 }
 
+typedef struct spa_split_dtl_arg {
+	spa_t		*ssda_spa;	/* the new pool */
+	uint64_t	*ssda_objs;	/* original DTL space map objects */
+	uint_t		ssda_count;	/* nitems in ssda_objs */
+} spa_split_dtl_arg_t;
+
+/*
+ * Record the DTL space map object of every leaf that has one into objs[],
+ * advancing *idxp. These are the objects that will be carried, via the
+ * copied MOS, onto the split disks.
+ */
+static void
+spa_split_collect_dtl(vdev_t *vd, uint64_t *objs, uint_t *idxp)
+{
+	if (vd->vdev_ops->vdev_op_leaf) {
+		if (vd->vdev_dtl_sm != NULL)
+			objs[(*idxp)++] = space_map_object(vd->vdev_dtl_sm);
+		return;
+	}
+	for (uint64_t c = 0; c < vd->vdev_children; c++)
+		spa_split_collect_dtl(vd->vdev_child[c], objs, idxp);
+}
+
+/*
+ * Callback that frees the inherited DTL space map objects from the new
+ * pool MOS. The new pool MOS is a byte copy of the original pool, so it
+ * contains a DTL space map object for every leaf of the original pool.
+ * The new pool references none of them because split leaves
+ * start with an empty DTL and allocate their own on demand.
+ */
+static void
+spa_split_dtl_free_sync(void *arg, dmu_tx_t *tx)
+{
+	spa_split_dtl_arg_t *ssda = arg;
+	objset_t *mos = ssda->ssda_spa->spa_meta_objset;
+
+	for (uint_t i = 0; i < ssda->ssda_count; i++)
+		space_map_free_obj(mos, ssda->ssda_objs[i], tx);
+}
+
 /*
  * Split a set of devices from their mirrors, and create a new pool from them.
  */
@@ -9151,7 +9239,9 @@ spa_vdev_split_mirror(spa_t *spa, const char *newname, nvlist_t *config,
 	nvlist_t **child, *nvl, *tmp;
 	dmu_tx_t *tx;
 	const char *altroot = NULL;
-	vdev_t *rvd, **vml = NULL;			/* vdev modify list */
+	vdev_t *rvd, **vml = NULL;	/* vdev modify list */
+	uint64_t *dtl_objs = NULL;	/* DTL objs from original pool */
+	uint_t ndtl = 0, nleaves;
 	boolean_t activate_slog;
 
 	ASSERT(spa_writeable(spa));
@@ -9299,6 +9389,11 @@ spa_vdev_split_mirror(spa_t *spa, const char *newname, nvlist_t *config,
 		return (spa_vdev_exit(spa, NULL, txg, error));
 	}
 
+	/* Create array of DTL objects. */
+	nleaves = vdev_count_leaves(spa);
+	dtl_objs = kmem_zalloc(nleaves * sizeof (uint64_t), KM_SLEEP);
+	spa_split_collect_dtl(spa->spa_root_vdev, dtl_objs, &ndtl);
+
 	/* stop writers from using the disks */
 	for (c = 0; c < children; c++) {
 		if (vml[c] != NULL)
@@ -9396,6 +9491,20 @@ spa_vdev_split_mirror(spa_t *spa, const char *newname, nvlist_t *config,
 		    B_TRUE));
 	}
 
+	/*
+	 * Free the DTL space map objects inherited from the original pool
+	 * MOS so we won't leak them.
+	 */
+	if (ndtl != 0) {
+		spa_split_dtl_arg_t ssda;
+
+		ssda.ssda_spa = newspa;
+		ssda.ssda_objs = dtl_objs;
+		ssda.ssda_count = ndtl;
+		VERIFY0(dsl_sync_task(spa_name(newspa), NULL,
+		    spa_split_dtl_free_sync, &ssda, 0, ZFS_SPACE_CHECK_NONE));
+	}
+
 	/* set the props */
 	if (props != NULL) {
 		spa_configfile_set(newspa, props, B_FALSE);
@@ -9435,11 +9544,33 @@ spa_vdev_split_mirror(spa_t *spa, const char *newname, nvlist_t *config,
 			}
 
 			vdev_split(vml[c]);
+
+			/*
+			 * As in spa_vdev_detach(), mark the vdev detached
+			 * and dirty its DTL, so that vdev_dtl_sync() frees
+			 * the leaf's DTL space map object.
+			 */
+			vml[c]->vdev_detached = B_TRUE;
+
+			/*
+			 * The leaf ZAP was transferred to the new pool
+			 * and this pool's copy is destroyed by the AVZ
+			 * rebuild below, so clear it to keep
+			 * vdev_dtl_sync() from destroying it again.
+			 */
+			vml[c]->vdev_leaf_zap = 0;
+
+			/*
+			 * vml[c]->vdev_top may be stale; the
+			 * surviving top-level vdev is rvd->vdev_child[c].
+			 */
+			if (vml[c]->vdev_dtl_sm != NULL)
+				vdev_dirty(rvd->vdev_child[c], VDD_DTL,
+				    vml[c], txg);
+
 			if (error == 0)
 				spa_history_log_internal(spa, "detach", tx,
 				    "vdev=%s", vml[c]->vdev_path);
-
-			vdev_free(vml[c]);
 		}
 	}
 	spa->spa_avz_action = AVZ_ACTION_REBUILD;
@@ -9450,6 +9581,18 @@ spa_vdev_split_mirror(spa_t *spa, const char *newname, nvlist_t *config,
 		dmu_tx_commit(tx);
 	(void) spa_vdev_exit(spa, NULL, txg, 0);
 
+	/*
+	 * txg is synced, free vdevs.
+	 */
+	spa_config_enter(spa, SCL_STATE_ALL, spa, RW_WRITER);
+	for (c = 0; c < children; c++) {
+		if (vml[c] != NULL && vml[c]->vdev_ops != &vdev_indirect_ops) {
+			ASSERT0P(vml[c]->vdev_dtl_sm);
+			vdev_free(vml[c]);
+		}
+	}
+	spa_config_exit(spa, SCL_STATE_ALL, spa);
+
 	if (zio_injection_enabled)
 		zio_handle_panic_injection(spa, FTAG, 3);
 
@@ -9459,6 +9602,8 @@ spa_vdev_split_mirror(spa_t *spa, const char *newname, nvlist_t *config,
 
 	newspa->spa_is_splitting = B_FALSE;
 	kmem_free(vml, children * sizeof (vdev_t *));
+	if (dtl_objs != NULL)
+		kmem_free(dtl_objs, nleaves * sizeof (uint64_t));
 
 	/* if we're not going to mount the filesystems in userland, export */
 	if (exp)
@@ -9492,6 +9637,9 @@ out:
 	(void) spa_vdev_exit(spa, NULL, txg, error);
 
 	kmem_free(vml, children * sizeof (vdev_t *));
+	if (dtl_objs != NULL)
+		kmem_free(dtl_objs, nleaves * sizeof (uint64_t));
+
 	return (error);
 }
 
