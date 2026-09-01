@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/hash
 source /usr/local/lib/h-linux-env.sh
 
 #

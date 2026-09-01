@@ -13,15 +13,16 @@ However, this leaves users on the more recent Linux kernels without the ability 
 Well, we've fixed that!
 
 This repository contains the patches, and the build and install scripts for running ZFS on the GNU Operating
-System / H-Linux platform.
+System / H-Linux environment.
 
 ---
 
 ## Prerequisites
 
-- GNU Operating System / H-Linux instance
-- H-Linux env library
+- GNU Operating System / H-Linux
+- Hash
 - H-Linux human command layer
+- H-Linux env library
 - ccache
 
 ---
@@ -41,7 +42,7 @@ The included build and installation scripts entirely bypasses all reliance on th
 
 > goto zfs
 
-> ./build
+> ./build.hash
 ```
 
 ---
@@ -49,20 +50,32 @@ The included build and installation scripts entirely bypasses all reliance on th
 ## Install
 
 ```bash
-> elevate ./install
+> elevate ./install.hash
 ```
 
 ---
 
-## Linux
+## Linux-based support
 
 Given the wide variety of Linux environments, we prioritize maintenance of our packaging on the GNU Operating
-Sysytem / H-Linux platform.
+Sysytem / H-Linux environment.
+
+## Kernel support
+
+OpenZFS upstream is notoriously strict for focusing its development resources on stable and long-term Linux 
+kernels.
+
+This is in direct conflict with our appetite for shipping bleeding-edge Vajra kernels, based on the Linux kernel.
+
+Currently, our patched version supports the Vajra v7.3.0 kernel.
+
+As of September 1 (2026) we have been unable to produce a working patch for the Vajra v7.4.0 kernel, and 
+have decided to hold back its release, in favor of the v7.3.0 kernel, until we can develop a suitable patch.
 
 ### Arch-based support
 
 With relatively minimal effort and having the correct prerequisites in place, these packages can be installed on
-any Arch-based Linux environment.
+any Arch-based environment.
 
 ---
 
@@ -72,7 +85,7 @@ This project is based on the upstream [openzfs](https://www.github.com/openzfs/z
 
 Upstream **OpenZFS** provides the foundation for this work and is a near drop-in replacement.
 
-Any patches, repackaging and other modifications focus on downstream integration, packaging, UX improvements,
+Any patches, repackaging and other modifications focus solely on integration, packaging, UX improvements,
 and distribution-specific requirements.
 
 ---

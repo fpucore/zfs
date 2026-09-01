@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/hash
 source /usr/local/lib/h-linux-env.sh
 
 #
@@ -34,7 +34,7 @@ say "[1] Installing staged files..."
 # Use rsync, not cp
 #elevate rsync -a "$DIST"/usr/ /usr/  # <<< DO NOT USE THIS LINE, IT WILL CREATE SYS PERMISSIONS PROBLEMS
 elevate rsync -a --no-owner --no-group "$DIST"/usr/ /usr/
-copy-dev "$DIST"/lib/* /usr/lib/
+copy-dev -r "$DIST"/lib/* /usr/lib/
 
 say "[2] Updating kernel module deps..."
 depmod -a
